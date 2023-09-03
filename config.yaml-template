@@ -1,0 +1,13 @@
+server: 'tcp://127.0.0.1:1883'
+topic:
+  - 'frigate/camera_1/person/snapshot'
+  - 'frigate/camera_2/person/snapshot'
+  - 'frigate/camera_3/person/snapshot'
+  - 'frigate/camera_4/person/snapshot'
+qos: 0
+clientid: 'frigate2pushover'
+username: null
+password: null
+pushover_token: 'xxx'
+pushover_recipient: 'xxx'
+
