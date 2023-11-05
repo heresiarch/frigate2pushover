@@ -1,5 +1,5 @@
 server: 'tcp://127.0.0.1:1883'
-topic:
+topics:
   - 'frigate/camera_1/person/snapshot'
   - 'frigate/camera_2/person/snapshot'
   - 'frigate/camera_3/person/snapshot'

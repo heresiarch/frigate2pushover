@@ -1,11 +1,11 @@
 package main
 
 import (
-	"crypto/tls"
+	"bytes"
 	"log"
 	"os"
 	"os/signal"
-	"syscall"
+	"strings"
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
@@ -13,9 +13,11 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+const configFile = "config.yaml"
+
 type Config struct {
 	Server            string   `yaml:"server"`
-	Topic             []string `yaml:"topic"`
+	Topics            []string `yaml:"topics"`
 	QoS               int      `yaml:"qos"`
 	ClientID          string   `yaml:"clientid"`
 	Username          string   `yaml:"username"`
@@ -24,8 +26,14 @@ type Config struct {
 	PushoverRecipient string   `yaml:"pushover_recipient"`
 }
 
-func readConfig(configFile string) (Config, error) {
-	var config Config
+var cachedConfig *Config
+
+func readConfig() (*Config, error) {
+	if cachedConfig != nil {
+		return cachedConfig, nil
+	}
+
+	config := new(Config)
 
 	configBytes, err := os.ReadFile(configFile)
 	if err != nil {
@@ -40,72 +48,88 @@ func readConfig(configFile string) (Config, error) {
 	return config, nil
 }
 
-func sendPushoverMessage(config Config) {
-	log.Printf("%+v\n", config)
-	app := pushover.New(config.PushoverToken)
-
-	recipient := pushover.NewRecipient(config.PushoverRecipient)
-
-	message := &pushover.Message{
-		Message:     "My awesome message",
-		Title:       "My title",
-		Priority:    pushover.PriorityEmergency,
-		URL:         "http://google.com",
-		URLTitle:    "Google",
-		Timestamp:   time.Now().Unix(),
-		Retry:       60 * time.Second,
-		Expire:      time.Hour,
-		DeviceName:  "Alienphone",
-		CallbackURL: "http://yourapp.com/callback",
-		Sound:       pushover.SoundCosmic,
+func sendPushoverMessage(image []byte) {
+	config, err := readConfig()
+	if err != nil {
+		log.Panic(err)
+		//os.Exit(1)
 	}
-
+	app := pushover.New(config.PushoverToken)
+	recipient := pushover.NewRecipient(config.PushoverRecipient)
+	message := &pushover.Message{
+		Message:  "Person detected",
+		Title:    "Alarm",
+		Priority: pushover.PriorityEmergency,
+		//URL:         "http://google.com",
+		//URLTitle:    "Google",
+		Timestamp:  time.Now().Unix(),
+		Retry:      60 * time.Second,
+		Expire:     time.Hour,
+		DeviceName: "Alienphone",
+		//CallbackURL: "http://yourapp.com/callback",
+		Sound: pushover.SoundSiren,
+	}
+	reader := bytes.NewReader(image)
+	message.AddAttachment(reader)
 	// Send the message to the recipient
 	response, err := app.SendMessage(message, recipient)
 	if err != nil {
 		log.Panic(err)
 		//os.Exit(1)
 	}
-
 	// Print the response if you want
 	log.Println(response)
 }
 
 func onMessageReceived(client MQTT.Client, message MQTT.Message) {
-	log.Printf("Received message on topic: %s\nMessage: %s\n", message.Topic(), message.Payload())
+	log.Printf("Received message on topic: %s", message.Topic())
+	sendPushoverMessage(message.Payload())
 }
 
 func main() {
-	configFile := "config.yaml"
-	config, err := readConfig(configFile)
+	config, err := readConfig()
 	if err != nil {
 		log.Fatalf("Error reading config: %v", err)
 		os.Exit(1)
 	}
 	//sendPushoverMessage(config)
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	connOpts := MQTT.NewClientOptions().AddBroker(config.Server).SetClientID(*&config.ClientID).SetCleanSession(true)
-	if config.Username != "" {
-		connOpts.SetUsername(config.Username)
-		if config.Password != "" {
-			connOpts.SetPassword(config.Password)
-		}
-	}
-	tlsConfig := &tls.Config{InsecureSkipVerify: true, ClientAuth: tls.NoClientCert}
-	connOpts.SetTLSConfig(tlsConfig)
+	// Create an MQTT client options
+	opts := MQTT.NewClientOptions()
+	opts.AddBroker(config.Server)
+	opts.SetClientID(config.ClientID)
+	opts.SetUsername(config.Username)
+	opts.SetPassword(config.Password)
 
-	connOpts.OnConnect = func(c MQTT.Client) {
-		if token := c.Subscribe(config.Topic[0], byte(config.QoS), onMessageReceived); token.Wait() && token.Error() != nil {
-			panic(token.Error())
-		}
-	}
+	client := MQTT.NewClient(opts)
 
-	client := MQTT.NewClient(connOpts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		log.Fatalf("Could not connect")
 		panic(token.Error())
-	} else {
-		log.Printf("Connected to %s\n", config.Server)
 	}
-	<-c
+
+	// Subscribe to each topic individually
+	for _, topic := range config.Topics {
+		if token := client.Subscribe(topic, byte(config.QoS), onMessageReceived); token.Wait() && token.Error() != nil {
+			log.Printf("Error subscribing to topic %s: %v", topic, token.Error())
+		}
+	}
+
+	// Check if the client successfully connected to the MQTT broker
+	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		log.Fatalf("Error connecting to MQTT broker: %v", token.Error())
+		return
+	}
+
+	log.Println("Connected to MQTT broker. Subscribed to topics:", strings.Join(config.Topics, ", "))
+
+	// Wait for a termination signal to gracefully disconnect
+	sigChannel := make(chan os.Signal, 1)
+	signal.Notify(sigChannel, os.Interrupt)
+	<-sigChannel
+
+	// Unsubscribe and disconnect from the MQTT broker
+	for _, topic := range config.Topics {
+		client.Unsubscribe(topic)
+	}
+	client.Disconnect(250)
 }

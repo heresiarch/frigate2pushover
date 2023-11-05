@@ -1,3 +1,5 @@
-main
 frigate2pushover
 config.yaml
+config-docker.yaml
+*.yaml
+
