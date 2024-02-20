@@ -99,6 +99,7 @@ func main() {
 	opts.SetClientID(config.ClientID)
 	opts.SetUsername(config.Username)
 	opts.SetPassword(config.Password)
+	opts.SetAutoReconnect(true)
 
 	client := MQTT.NewClient(opts)
 
